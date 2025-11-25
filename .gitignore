@@ -1,0 +1,7 @@
+# ignore uploaded documents, generated outputs and caches
+uploads/
+outputs/
+*.idx
+*.pkl
+__pycache__/
+.env

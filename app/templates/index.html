@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>AI Document Summariser</title>
+
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%}
+    body {
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto;
+      min-height:100vh;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background: linear-gradient(135deg,#0f172a,#0f3a5f);
+      color:#fff;
+      padding:30px;
+    }
+
+    .container {
+      display:flex;
+      gap:26px;
+      width:100%;
+      max-width:1200px;
+      align-items:flex-start;
+    }
+
+    /* left: card */
+    .card {
+      background: rgba(255,255,255,0.06);
+      padding: 22px;
+      border-radius:12px;
+      width: 680px;
+      box-shadow: 0 14px 40px rgba(2,6,23,0.7);
+    }
+    h1{font-size:20px;margin-bottom:6px}
+    .muted{color:rgba(255,255,255,0.7);margin-bottom:10px}
+
+    select,input[type=file]{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:#fff}
+    button.btn{padding:10px 14px;border-radius:8px;border:none;background:linear-gradient(90deg,#60a5fa,#7c3aed);color:#fff;font-weight:600;cursor:pointer}
+    pre#summary{margin-top:12px;background:rgba(0,0,0,0.25);padding:14px;border-radius:8px;color:#e9f2ff;white-space:pre-wrap;max-height:420px;overflow:auto}
+    .controls{display:flex;gap:10px;align-items:center;margin-top:12px}
+    .hidden{display:none}
+
+    /* right: welcome / status */
+    .side {
+      width: 420px;
+      min-height: 280px;
+      border-radius:12px;
+      padding:18px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
+      box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+    }
+    .welcome-title { font-size:18px; font-weight:700; margin-bottom:8px; }
+    .welcome-desc { color: rgba(255,255,255,0.78); margin-bottom:14px; line-height:1.4; }
+    .status-box { background: rgba(0,0,0,0.18); padding:12px; border-radius:8px; color:#eaf3ff; font-size:13px; min-height:72px; }
+    .status-label { font-weight:600; margin-bottom:6px; color:#bfe1ff; }
+    .file-link { display:block; margin-top:8px; color:#cfe9ff; word-break:break-all; text-decoration:underline; cursor:default; font-size:13px; }
+
+    .small-muted { color: rgba(255,255,255,0.55); font-size:13px; margin-top:8px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- LEFT: controls & summary -->
+    <div class="card">
+      <h1>AI Document Summariser</h1>
+      <p class="muted">Upload a document, index it, then generate headlines + short content.</p>
+
+      <form id="uploadForm" method="post" action="/upload" enctype="multipart/form-data">
+        <div style="margin-top:12px">
+          <label class="small-muted">Model</label>
+          <select name="model" id="model">
+            {% for m in models %}
+              <option value="{{m}}" {% if m==default_model %}selected{% endif %}>{{m}}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div style="margin-top:12px">
+          <label class="small-muted">Select file</label>
+          <input type="file" name="file" id="file" required />
+        </div>
+
+        <div class="controls">
+          <button class="btn" id="uploadBtn" type="submit">Upload</button>
+          <button class="btn hidden" id="generateBtn" type="button">Generate Summary</button>
+          <div id="statusText" class="small-muted">Ready</div>
+        </div>
+      </form>
+
+      <pre id="summary" class="hidden"></pre>
+
+      <div id="downloadArea" class="hidden" style="margin-top:10px">
+        <a id="downloadLink" class="btn" href="#" download>Download Summary</a>
+      </div>
+    </div>
+
+    <!-- RIGHT: welcome + live status -->
+    <div class="side" aria-live="polite">
+      <div class="welcome-title">Welcome to Document Summariser</div>
+      <div class="welcome-desc">
+        This tool extracts content from PDFs, PPTs and DOCX, builds a local retrieval index, and generates clear headlines with short, factual paragraphs under each headline. Use the model dropdown to pick a local model (gemma3/qwen/llama).
+      </div>
+
+      <div class="status-box" id="liveStatus">
+        <div class="status-label">Status</div>
+        <div id="statusMain">Idle — no file uploaded</div>
+        <div id="statusDetails" class="small-muted">Tip: Upload > Index > Generate. Large PDFs may take several minutes.</div>
+        <div id="filePath" class="file-link hidden"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const uploadForm = document.getElementById("uploadForm");
+const uploadBtn = document.getElementById("uploadBtn");
+const generateBtn = document.getElementById("generateBtn");
+const statusText = document.getElementById("statusText");
+const liveStatusMain = document.getElementById("statusMain");
+const statusDetails = document.getElementById("statusDetails");
+const filePathEl = document.getElementById("filePath");
+const summaryEl = document.getElementById("summary");
+const downloadArea = document.getElementById("downloadArea");
+const downloadLink = document.getElementById("downloadLink");
+
+let currentPrefix = null;
+let currentFilepath = null;
+let currentModel = null;
+
+function setIdle() {
+  statusText.textContent = "Ready";
+  liveStatusMain.textContent = "Idle — no file uploaded";
+  filePathEl.classList.add("hidden");
+}
+
+function setStatus(text, detail=null) {
+  statusText.textContent = text;
+  liveStatusMain.textContent = text;
+  if (detail) statusDetails.textContent = detail;
+}
+
+uploadForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  uploadBtn.disabled = true;
+  setStatus("Uploading...");
+  summaryEl.classList.add("hidden");
+  downloadArea.classList.add("hidden");
+  generateBtn.classList.add("hidden");
+
+  const fd = new FormData(uploadForm);
+  const resp = await fetch(uploadForm.action, { method: "POST", body: fd });
+  const j = await resp.json();
+
+  if (j.status === "uploaded") {
+    currentPrefix = j.prefix;
+    currentFilepath = j.filepath;
+    currentModel = j.model;
+    setStatus("Uploaded: " + j.filepath, "Click Generate Summary to begin indexing and summarisation.");
+    statusText.textContent = "Uploaded";
+    filePathEl.textContent = j.filepath;   // show full local path
+    filePathEl.classList.remove("hidden");
+    generateBtn.classList.remove("hidden");
+  } else {
+    setStatus("Upload failed");
+    statusDetails.textContent = j.error || JSON.stringify(j);
+  }
+  uploadBtn.disabled = false;
+});
+
+generateBtn.addEventListener("click", async () => {
+  if (!currentFilepath) { setStatus("No uploaded file."); return; }
+  generateBtn.disabled = true;
+  setStatus("Indexing (building embeddings)...", "This may take time for large documents.");
+
+  // call index endpoint
+  const indexResp = await fetch("/index_file", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ filepath: currentFilepath, prefix: currentPrefix })
+  });
+  const idxJ = await indexResp.json();
+  if (!idxJ.ok) {
+    setStatus("Indexing failed", idxJ.error || JSON.stringify(idxJ));
+    generateBtn.disabled = false;
+    return;
+  }
+
+  setStatus(`Indexed ${idxJ.chunks} chunks. Generating summary...`, "This may take several minutes for very large PDFs.");
+  // call summarise endpoint
+  const summarizeResp = await fetch("/summarize", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ prefix: currentPrefix, model: currentModel, top_k: 10, save: true })
+  });
+  const sJ = await summarizeResp.json();
+  if (!sJ.ok) {
+    setStatus("Summarization failed", sJ.error || JSON.stringify(sJ));
+    generateBtn.disabled = false;
+    return;
+  }
+
+  // show result
+  summaryEl.textContent = sJ.summary;
+  summaryEl.classList.remove("hidden");
+  if (sJ.download_url) {
+    downloadLink.href = sJ.download_url;
+    downloadArea.classList.remove("hidden");
+  }
+  setStatus("Done", `Summary generated for ${currentPrefix} (${sJ.chunks} chunks)`);
+  generateBtn.disabled = false;
+});
+
+setIdle();
+</script>
+</body>
+</html>

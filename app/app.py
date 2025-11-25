@@ -1,30 +1,34 @@
+# app/app.py
 import os
 import time
 import subprocess
 import tempfile
+import re
 from pathlib import Path
+from typing import List, Tuple, Dict, Any
 
 from flask import Flask, request, render_template, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 
-# extraction / chunking / embeddings / retrieval helpers
+import ollama
+
+# local modules
 from app.extract import extract_text
 from app.chunking import prepare_chunks
 from app.embeddings import embed_chunks, build_faiss_index, persist_index, load_index_and_chunks
 from app.retrieval import retrieve_top_k, assemble_context
 
-import ollama
-
+# config / folders
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_FOLDER = BASE_DIR / "uploads"
 OUTPUT_FOLDER = BASE_DIR / "outputs"
 UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
 OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
 
+ALLOWED_EXT = {".pdf", ".txt", ".pptx", ".ppt", ".docx", ".md"}
+
 app = Flask(__name__, template_folder=str(BASE_DIR / "app" / "templates"))
 app.config["UPLOAD_FOLDER"] = str(UPLOAD_FOLDER)
-
-ALLOWED_EXT = {".pdf", ".txt", ".pptx", ".ppt", ".docx", ".md"}
 
 
 # -------------------------
@@ -70,6 +74,49 @@ def upload_file():
 
 
 # -------------------------
+# EXTRACTION TEST
+# -------------------------
+@app.route("/extract_test", methods=["POST"])
+def extract_test():
+    data = request.json or {}
+    filepath = data.get("filepath")
+    if not filepath:
+        return jsonify({"error": "Provide JSON {\"filepath\": \"/full/path/to/file\"}"}), 400
+
+    try:
+        text = extract_text(filepath)
+        return jsonify({
+            "ok": True,
+            "length": len(text),
+            "snippet": text[:200]
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# -------------------------
+# CHUNKING TEST
+# -------------------------
+@app.route("/chunk_test", methods=["POST"])
+def chunk_test():
+    data = request.json or {}
+    filepath = data.get("filepath")
+    if not filepath:
+        return jsonify({"error": "filepath required"}), 400
+
+    try:
+        text = extract_text(filepath)
+        chunks = prepare_chunks(text)
+        return jsonify({
+            "ok": True,
+            "chunks": len(chunks),
+            "chunk_preview": chunks[0][:300] if chunks else ""
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# -------------------------
 # INDEXING ENDPOINT (embeddings + faiss)
 # -------------------------
 @app.route("/index_file", methods=["POST"])
@@ -104,20 +151,10 @@ def index_file():
 
 
 # -------------------------
-# Summarize endpoint (two-stage for large docs) + persistence (with Conclusion)
+# SUMMARIZE endpoint (existing logic)
 # -------------------------
 @app.route("/summarize", methods=["POST"])
 def summarize_endpoint():
-    """
-    POST JSON:
-      {
-        "prefix": "sameer_resume",    # required
-        "query": "Summarize ...",     # optional
-        "model": "gemma3:1b",         # optional
-        "top_k": 5,                   # optional
-        "save": true                  # optional, save summary to outputs/<prefix>_summary.txt
-      }
-    """
     data = request.json or {}
     prefix = data.get("prefix")
     if not prefix:
@@ -129,22 +166,16 @@ def summarize_endpoint():
     save_flag = bool(data.get("save", True))
 
     try:
-        # load entire index and chunks (we will use chunks for two-stage)
         index, chunks = load_index_and_chunks(prefix)
         n_chunks = len(chunks)
 
-        # If document is large, do two-stage summarisation:
-        # Stage A: produce short summaries for chunk groups
-        # Stage B: aggregate summaries and ask model to produce headlines + substantial content + Conclusion
-        TWO_STAGE_THRESHOLD = 12   # tuneable
+        TWO_STAGE_THRESHOLD = 12
         grouped_summaries = []
 
         if n_chunks > TWO_STAGE_THRESHOLD:
-            # group chunks into manageable batches to summarise
             BATCH_SIZE = 6
             for i in range(0, n_chunks, BATCH_SIZE):
                 batch_chunks = chunks[i:i+BATCH_SIZE]
-                # assemble batch context
                 batch_context = "\n\n---\n\n".join(batch_chunks)
                 batch_prompt = f"""You are a concise summarizer. For the context below produce a short single-sentence summary for each section.
 Context:
@@ -156,7 +187,6 @@ Instructions:
 Output format:
 SECTION_<index>: <one-sentence summary>
 """
-                # call model
                 try:
                     resp = ollama.run(model_name, batch_prompt)
                     if isinstance(resp, dict):
@@ -164,7 +194,6 @@ SECTION_<index>: <one-sentence summary>
                     else:
                         text_out = str(resp)
                 except Exception:
-                    # fallback to CLI
                     with tempfile.NamedTemporaryFile("w+", delete=False) as tf:
                         tf.write(batch_prompt); tf.flush()
                         proc = subprocess.run(["ollama", "run", model_name, "--nowordwrap"], stdin=open(tf.name,"rb"), capture_output=True, text=True, timeout=300)
@@ -173,12 +202,9 @@ SECTION_<index>: <one-sentence summary>
                         text_out = proc.stdout.strip()
 
                 grouped_summaries.append(text_out)
-                # brief pause to avoid hammering local model
                 time.sleep(0.2)
 
-            # Combine grouped summaries
             combined = "\n\n".join(grouped_summaries)
-            # Stage B: aggregate grouped summaries into headlines + more substantive content and a long Conclusion
             aggregate_prompt = f"""
 You are an expert editor. Given the following many one-line summaries (compact), produce a structured document with:
 - 8-12 clear headlines (short, descriptive)
@@ -215,9 +241,7 @@ Conclusion:
                     if proc.returncode != 0:
                         raise RuntimeError(f"ollama CLI failed: {proc.stderr}")
                     final_text = proc.stdout.strip()
-
         else:
-            # small document: retrieve top_k chunks and summarise directly in one pass with richer paragraphs + Conclusion
             selected_chunks, indices = retrieve_top_k(prefix, query, top_k=top_k)
             context = assemble_context(selected_chunks, max_chars=6500)
             direct_prompt = f"""
@@ -244,7 +268,6 @@ Instructions:
                         raise RuntimeError(f"ollama CLI failed: {proc.stderr}")
                     final_text = proc.stdout.strip()
 
-        # Optionally save final summary file
         summary_filename = f"{prefix}_summary.txt"
         if save_flag:
             out_path = OUTPUT_FOLDER / summary_filename
@@ -265,17 +288,120 @@ Instructions:
 
 
 # -------------------------
-# Download endpoint for saved summary files
+# ASK endpoint (RAG Q&A)
+# -------------------------
+def extract_pages_from_chunk_text(chunk_text: str) -> List[int]:
+    """Return a list of page numbers found in the chunk text (if any)."""
+    pages = [int(m) for m in re.findall(r"\[page:(\d+)\]", chunk_text)]
+    if pages:
+        return sorted(set(pages))
+    slides = [int(m) for m in re.findall(r"\[slide:(\d+)\]", chunk_text)]
+    if slides:
+        return sorted(set(slides))
+    return []
+
+
+@app.route("/ask", methods=["POST"])
+def ask_endpoint():
+    """
+    POST JSON:
+    {
+      "prefix": "sameer_resume",   # required: index prefix
+      "question": "What is virtualization?",
+      "model": "gemma3:1b",        # optional
+      "top_k": 5                  # optional
+    }
+    """
+    data = request.json or {}
+    prefix = data.get("prefix")
+    question = data.get("question")
+    if not prefix or not question:
+        return jsonify({"ok": False, "error": "prefix and question required"}), 400
+
+    model_name = data.get("model", "gemma3:1b")
+    top_k = int(data.get("top_k", 5))
+
+    try:
+        # retrieve top_k chunks (uses SentenceTransformer + FAISS)
+        selected_chunks, indices = retrieve_top_k(prefix, [], top_k=top_k) if False else retrieve_top_k(prefix, question, top_k=top_k)
+        if not selected_chunks:
+            return jsonify({"ok": False, "error": "no chunks retrieved for this prefix"}), 500
+
+        # build context including short markers for page numbers if present
+        context_blocks = []
+        for idx, chunk in zip(indices, selected_chunks):
+            pages = extract_pages_from_chunk_text(chunk)
+            page_hint = f"(pages: {pages[0]}-{pages[-1]})" if pages and len(pages) > 1 else (f"(page: {pages[0]})" if pages else "")
+            # include index and page hint to help model cite
+            context_blocks.append(f"CHUNK_INDEX:{idx} {page_hint}\n{chunk}")
+
+        context = "\n\n---\n\n".join(context_blocks)
+
+        prompt = f"""You are a precise assistant answering questions using ONLY the provided context. Do NOT hallucinate or add information not present in the context. If the document does not contain the answer, respond: "The document does not contain the requested information."
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer concisely. At the end, provide a short "SOURCES" line listing page numbers or chunk indices used, e.g. "SOURCES: pages 12-14" or "SOURCES: CHUNK_INDEX:3".
+"""
+        # call model
+        try:
+            resp = ollama.run(model_name, prompt)
+            answer_text = resp.get("response") if isinstance(resp, dict) else str(resp)
+        except Exception:
+            with tempfile.NamedTemporaryFile("w+", delete=False) as tf:
+                tf.write(prompt); tf.flush()
+                proc = subprocess.run(["ollama", "run", model_name, "--nowordwrap"], stdin=open(tf.name, "rb"), capture_output=True, text=True, timeout=300)
+                if proc.returncode != 0:
+                    return jsonify({"ok": False, "error": "ollama CLI failed", "stderr": proc.stderr}), 500
+                answer_text = proc.stdout.strip()
+
+        # Attempt to extract SOURCES line from model output
+        sources = []
+        m = re.search(r"SOURCES\:\s*(.*)$", answer_text, re.I | re.M)
+        if m:
+            sources_text = m.group(1).strip()
+            sources = [s.strip() for s in re.split(r"[,;]", sources_text) if s.strip()]
+        else:
+            # fallback: use the pages extracted from selected chunks
+            pages_set = set()
+            for ch in selected_chunks:
+                pages = extract_pages_from_chunk_text(ch)
+                for p in pages:
+                    pages_set.add(p)
+            if pages_set:
+                pages_list = sorted(pages_set)
+                # produce a compact pages range or list
+                if len(pages_list) > 1:
+                    sources = [f"pages {pages_list[0]}-{pages_list[-1]}"]
+                else:
+                    sources = [f"page {pages_list[0]}"]
+
+        return jsonify({
+            "ok": True,
+            "answer": answer_text,
+            "sources": sources,
+            "used_chunk_indices": indices,
+            "prefix": prefix
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# -------------------------
+# DOWNLOAD summary file
 # -------------------------
 @app.route("/download_summary/<filename>", methods=["GET"])
 def download_summary(filename):
-    # Security: restrict to outputs folder
     safe = Path(filename).name
     return send_from_directory(str(OUTPUT_FOLDER), safe, as_attachment=True)
 
 
 # -------------------------
-# Run
+# RUN
 # -------------------------
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)

@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AI Document Summariser</title>
+
+  <style>
+    /* Reset + base */
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%}
+    body{
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      background: linear-gradient(180deg,#0b2336 0%, #102b45 100%);
+      color:#e6eef8;
+      -webkit-font-smoothing:antialiased;
+      -moz-osx-font-smoothing:grayscale;
+      padding:28px;
+    }
+
+    .wrap{
+      max-width:1200px;
+      margin:0 auto;
+    }
+
+    header.hero{
+      background: rgba(255,255,255,0.04);
+      border-radius:10px;
+      padding:26px 28px;
+      text-align:center;
+      margin-bottom:20px;
+      box-shadow: 0 10px 30px rgba(2,8,20,0.6);
+      transform: translateY(-8px);
+      animation: floatIn 500ms ease both;
+    }
+    header.hero h1{
+      font-size:36px;
+      color:#fff;
+      font-weight:600;
+      letter-spacing: -0.5px;
+    }
+    header.hero p{
+      color: rgba(230,238,248,0.8);
+      margin-top:8px;
+      font-size:14px;
+    }
+
+    .grid{
+      display:grid;
+      grid-template-columns: 1fr 320px;
+      gap:22px;
+      align-items:start;
+    }
+
+    /* Left big panel */
+    .panel {
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
+      border-radius:12px;
+      padding:24px;
+      min-height:420px;
+      box-shadow: 0 18px 40px rgba(2,6,23,0.55);
+      overflow:hidden;
+      position:relative;
+      animation: slideInLeft 420ms ease both;
+      display:flex;
+      flex-direction:column;
+    }
+
+    .section-title{
+      font-size:18px;
+      margin-bottom:8px;
+      color:#eaf4ff;
+      font-weight:600;
+    }
+    .muted{color:rgba(230,238,248,0.72);font-size:13px;margin-bottom:14px}
+
+    /* dropzone */
+    .dropzone{
+      border-radius:12px;
+      border:2px dashed rgba(255,255,255,0.08);
+      padding:26px 20px;
+      margin-top:10px;
+      background: rgba(0,0,0,0.18);
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+      align-items:flex-start;
+      justify-content:center;
+      transition: all 160ms ease;
+      cursor:pointer;
+    }
+    .dropzone.dragover{
+      background:rgba(124,199,255,0.12);
+      border-color:rgba(124,199,255,0.8);
+      box-shadow:0 10px 30px rgba(124,199,255,0.3);
+    }
+    .dz-title{font-size:16px;font-weight:500}
+    .dz-sub{font-size:13px;color:rgba(230,238,248,0.8)}
+    .dz-file{font-size:13px;color:#dff1ff;margin-top:4px}
+
+    .browse-label{
+      display:inline-block;
+      margin-top:8px;
+      padding:8px 12px;
+      border-radius:8px;
+      border:1px solid rgba(255,255,255,0.2);
+      font-size:13px;
+      color:#eaf4ff;
+      background:rgba(255,255,255,0.05);
+    }
+
+    /* Buttons */
+    .btn {
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:8px;
+      padding:12px 18px;
+      border-radius:10px;
+      border:0;
+      cursor:pointer;
+      font-weight:600;
+      font-size:14px;
+      color:#fff;
+      background: linear-gradient(90deg,#6bb8ff,#7b5cff);
+      box-shadow: 0 8px 18px rgba(75,50,150,0.12);
+      transition: transform 160ms ease, box-shadow 160ms ease;
+    }
+    .btn.secondary {
+      background: rgba(255,255,255,0.06);
+      color: #dff1ff;
+      box-shadow:none;
+      border: 1px solid rgba(255,255,255,0.03);
+    }
+    .btn:active{ transform: translateY(1px); }
+    .btn:hover{ transform: translateY(-4px); box-shadow: 0 20px 40px rgba(20,40,80,0.12); }
+
+    .controls { display:flex; gap:12px; align-items:center; margin-top:16px; }
+
+    .status-small{ font-size:13px; color:rgba(230,238,248,0.65); margin-left:auto }
+
+    /* Summary area */
+    .summary {
+      margin-top:18px;
+      background: rgba(2,8,20,0.3);
+      border-radius:10px;
+      padding:14px;
+      max-height:260px;
+      overflow:auto;
+      color:#e9f5ff;
+      font-size:14px;
+      line-height:1.5;
+      display:none;
+      animation: fadeIn 320ms ease both;
+    }
+
+    .download-row{
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      margin-top:10px;
+      gap:12px;
+      display:none;
+    }
+    .download-row .small{font-size:13px;color:rgba(230,238,248,0.72)}
+
+    /* Right side panel */
+    .side {
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015));
+      border-radius:12px;
+      padding:18px;
+      min-height:420px;
+      box-shadow: 0 10px 30px rgba(2,6,23,0.4);
+      animation: slideInRight 420ms ease both;
+      display:flex;
+      flex-direction:column;
+      gap:14px;
+    }
+
+    .side-block{
+      background:rgba(0,0,0,0.22);
+      border-radius:10px;
+      padding:12px 12px 14px;
+    }
+
+    .side .title { font-size:18px; font-weight:700; color:#eaf4ff; margin-bottom:8px }
+    .side .desc { color: rgba(230,238,248,0.78); font-size:13px; margin-bottom:14px }
+
+    label.muted-compact{ color: rgba(230,238,248,0.8); font-size:13px; display:block; margin-bottom:6px }
+
+    select, input[type="text"]{
+      width:100%;
+      padding:10px 10px;
+      border-radius:8px;
+      border:1px solid rgba(255,255,255,0.06);
+      background:rgba(0,0,0,0.12);
+      color: #e9f5ff;
+      font-size:14px;
+      outline:none;
+    }
+
+    .qa-box { display:flex; flex-direction:column; gap:10px }
+    textarea#answerBox { resize:none; min-height:140px; padding:12px; border-radius:8px; border:1px solid rgba(255,255,255,0.04); background:rgba(0,0,0,0.12); color:#eef9ff; font-size:14px }
+    input#questionInput { padding:10px; border-radius:8px }
+
+    .answer-result{
+      margin-top:10px;
+      background: rgba(0,0,0,0.14);
+      padding:12px;
+      border-radius:8px;
+      min-height:80px;
+      color:#eaf4ff;
+      font-size:14px;
+      display:none;
+    }
+
+    .muted-compact{ color: rgba(230,238,248,0.6); font-size:13px }
+
+    @media (max-width:1000px){
+      .grid{ grid-template-columns: 1fr; }
+      .side{ order:2; margin-top:12px }
+    }
+
+    @keyframes slideInLeft { from{ transform: translateX(-12px); opacity:0 } to{ transform:none; opacity:1 } }
+    @keyframes slideInRight { from{ transform: translateX(12px); opacity:0 } to{ transform:none; opacity:1 } }
+    @keyframes floatIn { from{ opacity:0; transform:translateY(-20px) } to{ opacity:1; transform:none } }
+    @keyframes fadeIn { from{ opacity:0 } to{ opacity:1 } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <h1>AI Document Summariser</h1>
+      <p>Upload your PDF/PPT/DOCX, build a local retrieval index, generate headlines + conclusion, and ask targeted questions.</p>
+    </header>
+
+
+<!-- Global loading overlay -->
+<div id="loadingOverlay"
+     style="
+       position: fixed;
+       top:0; left:0;
+       width:100%; height:100%;
+       background: rgba(0,0,0,0.55);
+       backdrop-filter: blur(4px);
+       display:none;
+       align-items:center;
+       justify-content:center;
+       z-index:9999;">
+  <div style="
+        width:60px;height:60px;
+        border:6px solid rgba(255,255,255,0.2);
+        border-top-color:#7b5cff;
+        border-radius:50%;
+        animation: spin 0.8s linear infinite;">
+  </div>
+</div>
+
+<style>
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+</style>
+
+
+
+    <main class="grid">
+      <!-- LEFT: Upload / generate / summary -->
+      <section class="panel" aria-labelledby="upload-section">
+        <div id="upload-section">
+          <div class="section-title">Upload & Generate</div>
+          <div class="muted">Upload a document, then generate a summary with conclusion.</div>
+
+          <!-- drag & drop area -->
+          <div id="dropzone" class="dropzone">
+            <div class="dz-title">Drag & drop a file here</div>
+            <div class="dz-sub">Supported: PDF, PPT, PPTX, DOCX, TXT</div>
+            <div id="fileName" class="dz-file">No file selected</div>
+            <label for="fileInput" class="browse-label">Browse file…</label>
+            <input id="fileInput" type="file" name="file" style="display:none" />
+          </div>
+
+          <div class="controls">
+            <button id="uploadBtn" class="btn">Upload</button>
+            <button id="generateBtn" class="btn secondary" style="display:none">Generate</button>
+            <div id="statusText" class="status-small">Ready</div>
+          </div>
+
+          <div id="summaryBox" class="summary"></div>
+
+          <div id="downloadRow" class="download-row">
+            <div class="small">Summary ready</div>
+            <div>
+              <a id="downloadLink" class="btn secondary" download>Download</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT: Model (small) + Ask questions -->
+      <aside class="side" aria-labelledby="qa-section">
+
+        <!-- small model block at top -->
+        <div class="side-block">
+          <label for="modelSelect" class="muted-compact">Model</label>
+          <select id="modelSelect" name="model">
+            {% for m in models %}
+              <option value="{{m}}" {% if m==default_model %}selected{% endif %}>{{m}}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div id="qa-section" class="side-block">
+          <div class="title">Ask questions</div>
+          <div class="desc">Ask a targeted question about the uploaded document. The model will retrieve relevant passages and return an answer with sources.</div>
+
+          <div class="qa-box">
+            <input type="text" id="questionInput" placeholder="Type a question (e.g., What is virtualization?)" />
+            <div style="display:flex;gap:10px;">
+              <button id="askBtn" class="btn">Ask</button>
+              <button id="clearQBtn" class="btn secondary">Clear</button>
+            </div>
+
+            <div id="answerResult" class="answer-result"></div>
+            <div id="answerSources" class="muted-compact" style="display:none"></div>
+          </div>
+
+          <div style="margin-top:16px" class="muted-compact">
+            Tip: upload and index the document first. For best answers choose the same model used for summarisation.
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+<script>
+  const uploadBtn = document.getElementById('uploadBtn');
+  const generateBtn = document.getElementById('generateBtn');
+  const fileInput = document.getElementById('fileInput');
+  const modelSelect = document.getElementById('modelSelect');
+  const statusText = document.getElementById('statusText');
+  const summaryBox = document.getElementById('summaryBox');
+  const downloadRow = document.getElementById('downloadRow');
+  const downloadLink = document.getElementById('downloadLink');
+  const fileName = document.getElementById('fileName');
+  const dropzone = document.getElementById('dropzone');
+
+  const questionInput = document.getElementById('questionInput');
+  const askBtn = document.getElementById('askBtn');
+  const clearQBtn = document.getElementById('clearQBtn');
+  const answerResult = document.getElementById('answerResult');
+  const answerSources = document.getElementById('answerSources');
+
+  let currentPrefix = null, currentFilepath = null, currentModel = null;
+  let selectedFile = null;
+
+  // handle file choose via dialog
+  fileInput.addEventListener('change', (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    selectedFile = f;
+    fileName.textContent = `${f.name} (${Math.round(f.size/1024)} KB)`;
+  });
+
+  // drag & drop
+  dropzone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropzone.classList.add('dragover');
+  });
+  dropzone.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+  });
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (!f) return;
+    selectedFile = f;
+    fileName.textContent = `${f.name} (${Math.round(f.size/1024)} KB)`;
+  });
+
+  // clicking inside dropzone triggers file dialog
+  dropzone.addEventListener('click', () => fileInput.click());
+
+  uploadBtn.addEventListener('click', async () => {
+    const f = selectedFile || fileInput.files[0];
+    if (!f) { statusText.textContent = 'Select or drop a file first'; return; }
+    uploadBtn.disabled = true;
+    statusText.textContent = 'Uploading...';
+    showLoading();
+
+    const fd = new FormData();
+    fd.append('file', f);
+    fd.append('model', modelSelect.value);
+
+    try {
+      const res = await fetch('/upload', { method: 'POST', body: fd });
+      const j = await res.json();
+      if (j.status === 'uploaded') {
+        currentPrefix = j.prefix;
+        currentFilepath = j.filepath;
+        currentModel = j.model;
+        statusText.textContent = 'Uploaded: ' + currentPrefix;
+        generateBtn.style.display = 'inline-flex';
+      } else {
+        statusText.textContent = 'Upload failed';
+        console.error(j);
+      }
+    } catch (err){
+      console.error(err);
+      statusText.textContent = 'Upload error';
+    } finally {
+      uploadBtn.disabled = false;
+      hideLoading();
+    }
+  });
+
+  generateBtn.addEventListener('click', async () => {
+    if (!currentFilepath) { statusText.textContent = 'No file to index'; return; }
+    generateBtn.disabled = true;
+    statusText.textContent = 'Indexing...';
+    showLoading();
+
+    // 1. index
+    try {
+      const idx = await fetch('/index_file', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ filepath: currentFilepath, prefix: currentPrefix })
+      });
+      const idj = await idx.json();
+      if (!idj.ok) { statusText.textContent = 'Indexing failed'; generateBtn.disabled = false; return; }
+      statusText.textContent = `Indexed ${idj.chunks} chunks. Generating summary...`;
+    } catch (e) {
+      console.error(e);
+      statusText.textContent = 'Indexing error'; generateBtn.disabled = false; return;
+    }
+
+    // 2. summarize
+    try {
+      const s = await fetch('/summarize', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ prefix: currentPrefix, model: currentModel, top_k: 8, save: true })
+      });
+      const sj = await s.json();
+      if (!sj.ok) { statusText.textContent = 'Summarization failed'; generateBtn.disabled=false; return; }
+      summaryBox.style.display = 'block';
+      summaryBox.textContent = sj.summary || sj.summary_text || JSON.stringify(sj, null, 2);
+      downloadRow.style.display = 'flex';
+      if (sj.download_url) downloadLink.href = sj.download_url;
+      statusText.textContent = 'Done';
+    } catch (e) {
+      console.error(e);
+      statusText.textContent = 'Summarization error';
+    } finally {
+      generateBtn.disabled = false;
+      hideLoading();
+    }
+  });
+
+  askBtn.addEventListener('click', async () => {
+    const q = (questionInput.value || '').trim();
+    if (!q) return;
+    if (!currentPrefix) { answerResult.style.display='block'; answerResult.textContent='No document indexed'; return; }
+    askBtn.disabled = true;
+    answerResult.style.display = 'none';
+    answerSources.style.display = 'none';
+    statusText.textContent = 'Running Q&A...';
+    showLoading();
+    try {
+      const r = await fetch('/ask', {
+        method:'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ prefix: currentPrefix, question: q, model: currentModel, top_k: 6 })
+      });
+      const jr = await r.json();
+      if (!jr.ok) {
+        answerResult.style.display='block';
+        answerResult.textContent = jr.error || 'Q&A error';
+        statusText.textContent = 'Q&A failed';
+      } else {
+        answerResult.style.display='block';
+        answerResult.textContent = jr.answer || jr.answer_text || JSON.stringify(jr, null, 2);
+        if (jr.sources && jr.sources.length) {
+          answerSources.style.display='block';
+          answerSources.textContent = 'Sources: ' + jr.sources.join(', ');
+        } else {
+          answerSources.style.display='none';
+        }
+        statusText.textContent = 'Q&A done';
+      }
+    } catch (err) {
+      console.error(err);
+      answerResult.style.display='block';
+      answerResult.textContent = 'Q&A error';
+      statusText.textContent = 'Q&A error';
+    } finally {
+      askBtn.disabled = false;
+      hideLoading();
+    }
+  });
+
+
+  function showLoading() {
+  document.getElementById('loadingOverlay').style.display = 'flex';
+}
+function hideLoading() {
+  document.getElementById('loadingOverlay').style.display = 'none';
+}
+
+  clearQBtn.addEventListener('click', () => {
+    questionInput.value='';
+    answerResult.style.display='none';
+    answerSources.style.display='none';
+  });
+</script>
+</body>
+</html>

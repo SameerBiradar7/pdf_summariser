@@ -4,12 +4,25 @@ import time
 import subprocess
 import tempfile
 import re
+from pymongo import MongoClient
+import datetime
 from pathlib import Path
 from typing import List, Tuple
+from flask import (
+    Flask,
+    request,
+    render_template,
+    jsonify,
+    send_from_directory,
+    redirect,
+    url_for,
+    session,
+)
 
 from flask import Flask, request, render_template, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 
+from werkzeug.security import generate_password_hash, check_password_hash
 import ollama
 
 # local modules
@@ -36,14 +49,75 @@ ALLOWED_EXT = {".pdf", ".txt", ".pptx", ".ppt", ".docx", ".md"}
 app = Flask(__name__, template_folder=str(BASE_DIR / "app" / "templates"))
 app.config["UPLOAD_FOLDER"] = str(UPLOAD_FOLDER)
 
+# Session secret key (for login sessions)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-me")
+
+# -------------------------
+# MongoDB (local, offline)
+# -------------------------
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb://127.0.0.1:27017")
+MONGO_DB_NAME = os.environ.get("MONGO_DB_NAME", "ai_summariser")
+MONGO_USERS_COL = os.environ.get("MONGO_USERS_COL", "users")
+
+mongo_client = MongoClient(MONGO_URI)
+mongo_db = mongo_client[MONGO_DB_NAME]
+users_col = mongo_db[MONGO_USERS_COL]
+
+
+def normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def hash_password(raw_password: str) -> str:
+    """Hash a password using Werkzeug (PBKDF2)."""
+    raw = str(raw_password or "")
+    return generate_password_hash(raw)
+
+def verify_password(raw_password: str, hashed: str) -> bool:
+    """Verify password against stored hash."""
+    raw = str(raw_password or "")
+    if not hashed:
+        return False
+    try:
+        return check_password_hash(hashed, raw)
+    except Exception:
+        return False
+
+
+
 
 # -------------------------
 # HOME
 # -------------------------
 @app.route("/", methods=["GET"])
 def index():
+    # Require login to use the summariser dashboard
+    if not session.get("user_id"):
+        return redirect(url_for("login_page"))
+
     models = ["gemma3:1b", "qwen2:1.5b", "llama3.2:latest"]
     return render_template("index.html", models=models, default_model=models[0])
+
+
+# -------------------------
+# AUTH PAGES (UI only)
+# -------------------------
+@app.route("/signup", methods=["GET"])
+def signup_page():
+    # if already logged in, go to dashboard
+    if session.get("user_id"):
+        return redirect(url_for("index"))
+    return render_template("signup.html")
+
+
+@app.route("/login", methods=["GET"])
+def login_page():
+    # if already logged in, go to dashboard
+    if session.get("user_id"):
+        return redirect(url_for("index"))
+    return render_template("login.html")
+
+
 
 
 # -------------------------
@@ -77,6 +151,98 @@ def upload_file():
         "prefix": prefix,
         "model": model_name
     })
+
+# -------------------------
+# AUTH APIs (MongoDB)
+# -------------------------
+@app.route("/signup", methods=["POST"])
+def signup_api():
+    """
+    JSON body:
+    {
+      "name": "Full Name",
+      "email": "user@example.com",
+      "password": "1234"
+    }
+    """
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    email = normalize_email(data.get("email"))
+    password = str(data.get("password") or "").strip()
+
+    # Basic validations (must match your frontend rules)
+    if len(name) < 2:
+        return jsonify({"ok": False, "error": "Name must be at least 2 characters long"}), 400
+
+    # simple email check
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        return jsonify({"ok": False, "error": "Please enter a valid email address"}), 400
+
+    if not re.fullmatch(r"\d{4}", password):
+        return jsonify({"ok": False, "error": "Password must be exactly 4 digits"}), 400
+
+    # Check if email already exists
+    existing = users_col.find_one({"email": email})
+    if existing:
+        return jsonify({"ok": False, "error": "This email is already registered"}), 400
+
+    # Create user
+    user_doc = {
+        "name": name,
+        "email": email,
+        "password_hash": hash_password(password),
+        "created_at": datetime.datetime.utcnow(),
+    }
+    res = users_col.insert_one(user_doc)
+
+    # Do NOT auto-login here. Frontend already redirects to /login.
+    return jsonify({"ok": True, "message": "Account created successfully"}), 201
+
+
+@app.route("/login", methods=["POST"])
+def login_api():
+    """
+    JSON body:
+    {
+      "email": "user@example.com",
+      "password": "1234"
+    }
+    """
+    data = request.get_json(silent=True) or {}
+    email = normalize_email(data.get("email"))
+    password = str(data.get("password") or "").strip()
+
+    # Basic validations
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        return jsonify({"ok": False, "error": "Please enter a valid email address"}), 400
+
+    if not re.fullmatch(r"\d{4}", password):
+        return jsonify({"ok": False, "error": "Password must be exactly 4 digits"}), 400
+
+    user = users_col.find_one({"email": email})
+    if not user:
+        return jsonify({"ok": False, "error": "Invalid email or password"}), 401
+
+    if not verify_password(password, user.get("password_hash", "")):
+        return jsonify({"ok": False, "error": "Invalid email or password"}), 401
+
+    # Set session
+    session["user_id"] = str(user["_id"])
+    session["user_email"] = user["email"]
+    session["user_name"] = user.get("name", "")
+
+    # Optional token for frontend; not really needed for simple session auth
+    token = f"session-{session['user_id']}"
+
+    return jsonify({"ok": True, "message": "Login successful", "token": token}), 200
+
+
+@app.route("/logout", methods=["POST", "GET"])
+def logout():
+    session.clear()
+    return redirect(url_for("login_page"))
+
+
 
 
 # -------------------------

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
+# Always run from project root (where run.sh lives)
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
 
-# --- OFFLINE env (MUST be set before Python imports HF libs) ---
+# --- OFFLINE env (must be set before Python imports HF libs) ---
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
@@ -11,19 +13,17 @@ export HF_ALLOW_CODE_DOWNLOAD=false
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 
-ENV_NAME="rag_flask_env"
+# Use the rag_flask_env Python directly (no conda activate needed)
+PYTHON_BIN="/opt/homebrew/Caskroom/miniforge/base/envs/rag_flask_env/bin/python"
 
-# Try to initialize conda hooks (non-fatal)
-if command -v conda >/dev/null 2>&1; then
-  eval "$(conda shell.zsh hook)" 2>/dev/null || eval "$(conda shell.bash hook)" 2>/dev/null || true
-  conda activate "${ENV_NAME}" 2>/dev/null || true
-fi
-
-# Choose python
-if command -v python >/dev/null 2>&1; then
-  PYTHON_BIN="$(command -v python)"
-else
-  PYTHON_BIN="$(command -v python3 || echo python)"
+# If that path breaks for some reason, fallback to whatever "python" is
+if [ ! -x "$PYTHON_BIN" ]; then
+  echo "[run.sh] WARNING: $PYTHON_BIN not found or not executable. Falling back to 'python' on PATH."
+  if command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python)"
+  else
+    PYTHON_BIN="$(command -v python3 || echo python)"
+  fi
 fi
 
 export PYTHONPATH="${ROOT}"
